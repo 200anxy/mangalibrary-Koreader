@@ -1,5 +1,5 @@
 # Manga Library Manager - KOReader Plugin
-
+If there are any bugs/issues, please report them in the bug tracker so that they can be fixed
 
 
 A comprehensive manga library management plugin for KOReader that provides full-screen manga organization, reading progress tracking, and seamless chapter navigation.
