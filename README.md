@@ -21,9 +21,9 @@ A comprehensive manga library management plugin for KOReader that provides full-
 ## Installation
 
 ### Prerequisites
-- **Jailbroken Kindle** (required for custom plugins)
+- **Jailbroken Kindle** (or **Ubuntu** (required for custom plugins)
 - **KOReader installed** on your device
-- **Kindle Paperwhite Gen 7** (tested device - may work on others)
+- **Kindle Paperwhite Gen 7** or **Ubuntu** (tested device - probably will work on others as well)
 
 ### Step-by-Step Installation
 
