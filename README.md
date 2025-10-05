@@ -1,5 +1,5 @@
 # Manga Library Manager - KOReader Plugin
-If there are any bugs/issues, please report them in the bug tracker so that they can be fixed
+
 
 
 A comprehensive manga library management plugin for KOReader that provides full-screen manga organization, reading progress tracking, and seamless chapter navigation.
@@ -34,13 +34,12 @@ A comprehensive manga library management plugin for KOReader that provides full-
 Create folder: MangaLibrary.koplugin
 
 3. **Add Plugin Files**
-```
 MangaLibrary.koplugin/
 ├── main.lua
 └── _meta.lua
-```
 
-5. **Install on Device**
+
+4. **Install on Device**
 - Connect your Kindle via USB
 - Copy the `MangaLibrary.koplugin` folder to:
   ```
@@ -62,7 +61,7 @@ MangaLibrary.koplugin/
 
 1. **Organize Your Files**
 For example, do:
-```
+
 /mnt/us/manga/
 ├── One Piece/
 │ ├── Chapter 001.cbz
@@ -74,7 +73,7 @@ For example, do:
 └── Attack on Titan/
 ├── Chapter 001.cbz
 └── Chapter 002.cbz
-```
+
 2. **Add Manga Folders**
 - Open Manga Library
 - Tap **⚙️ Settings** (top-left)
@@ -140,12 +139,12 @@ For example, do:
 
 🚀 **Planned Features for Future Releases:**
 
--  Direct Manga Downloads - Download manga directly into specified folders from within the plugin
-- Enhanced Display Options - Cover art display, grid view, reading statistics
-- Library Management- Series grouping, custom tags, search functionality
-- Online Integration- Popular manga source integration with automatic updates
-- Multi-Device Sync - Progress synchronization across multiple devices
--  Performance Optimizations - Faster library loading for large collections
+- ** Direct Manga Downloads** - Download manga directly into specified folders from within the plugin
+- ** Enhanced Display Options** - Cover art display, grid view, reading statistics
+- ** Library Management** - Series grouping, custom tags, search functionality
+- ** Online Integration** - Popular manga source integration with automatic updates
+- ** Multi-Device Sync** - Progress synchronization across multiple devices
+- ** Performance Optimizations** - Faster library loading for large collections
 
 ## Contributing
 
