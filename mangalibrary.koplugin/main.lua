@@ -236,6 +236,10 @@ function MangaLibraryWidget:init()
     self.current_view = "library"
     self.current_series = nil
     self.width = Screen:getWidth()
+    
+    -- Performance: Cache to avoid repeated file system scanning
+    self.library_cache = nil
+    self.cache_valid = false
     self.height = Screen:getHeight()
     self:buildLibraryView()
     
@@ -248,6 +252,13 @@ end
 
 function MangaLibraryWidget:buildLibraryView()
     self.current_view = "library"
+    
+    -- Performance: Return cached view if valid (skips file scanning)
+    if self.cache_valid and self.library_cache then
+        self[1] = self.library_cache
+        UIManager:setDirty(self, "ui")
+        return
+    end
     
     local title_bar = TitleBar:new{
         width = self.width,
@@ -298,6 +309,10 @@ function MangaLibraryWidget:buildLibraryView()
             content,
         }
     }
+    
+    -- Performance: Cache this view
+    self.library_cache = self[1]
+    self.cache_valid = true
 end
 
 function MangaLibraryWidget:getMangaList()
@@ -887,6 +902,9 @@ function MangaLibraryWidget:confirmDeleteSeries(series_name)
             self.manga_library.settings:saveSetting("reading_progress", self.manga_library.reading_progress)
             self.manga_library.settings:flush()
 
+            -- Invalidate cache when data changes
+            self.cache_valid = false
+
             UIManager:show(InfoMessage:new{
                 text = _("Series removed from library."),
                 timeout = 2,
@@ -1147,6 +1165,11 @@ function MangaLibrary:processMangaSeries(series_path, series_name)
 end
 
 function MangaLibrary:refreshLibrary()
+    -- Invalidate cache to force rebuild
+    if self.widget then
+        self.widget.cache_valid = false
+    end
+
     local processed_count = 0
     
     for _, folder_path in ipairs(self.manga_folders) do
