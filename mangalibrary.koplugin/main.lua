@@ -352,6 +352,13 @@ function MangaLibraryWidget:showSettings()
             end,
         }},
         {{
+            text = _("Manage Series"),
+            callback = function()
+                UIManager:close(self.settings_dialog)
+                self:showManageSeriesScreen()
+            end,
+        }},
+        {{
             text = _("Refresh Library"),
             callback = function()
                 UIManager:close(self.settings_dialog)
@@ -425,15 +432,9 @@ function MangaLibraryWidget:showFolderManagement()
             end
             
             table.insert(folder_list, {
-                text = display_path,
-                hold_callback = function()
-                    self:showFolderOptions(folder_path, i)
-                end,
+                text = "[DELETE] " .. display_path,
                 callback = function()
-                    UIManager:show(InfoMessage:new{
-                        text = _("Long press to manage this folder\n\n") .. folder_path,
-                        timeout = 2,
-                    })
+                    self:showFolderOptions(folder_path, i)
                 end
             })
         end
@@ -761,6 +762,7 @@ function MangaLibraryWidget:showChapterView(series_name)
         item_table = chapter_list,
         is_borderless = true,
         is_popout = false,
+        show_parent = self,
         width = self.width,
         height = self.height - title_bar:getHeight(),
         close_callback = function()
@@ -873,6 +875,106 @@ function MangaLibraryWidget:showChapterOptions(chapter, series_name)
         buttons = buttons,
     }
     UIManager:show(self.chapter_options_dialog)
+end
+
+
+function MangaLibraryWidget:confirmDeleteSeries(series_name)
+    UIManager:show(ConfirmBox:new{
+        text = _("Delete this manga from library?\n\n") .. series_name .. _("\n\nFiles will NOT be deleted from storage."),
+        ok_text = _("Delete"),
+        ok_callback = function()
+            self.manga_library.reading_progress[series_name] = nil
+            self.manga_library.settings:saveSetting("reading_progress", self.manga_library.reading_progress)
+            self.manga_library.settings:flush()
+
+            UIManager:show(InfoMessage:new{
+                text = _("Series removed from library."),
+                timeout = 2,
+            })
+
+            UIManager:scheduleIn(0.3, function()
+                if self.current_view == "manage_series" then
+                    self:showManageSeriesScreen()
+                else
+                    self:buildLibraryView()
+                end
+            end)
+        end,
+    })
+end
+
+function MangaLibraryWidget:showManageSeriesScreen()
+    self.current_view = "manage_series"
+
+    local title_bar = TitleBar:new{
+        width = self.width,
+        align = "center",
+        title = _("Manage Series"),
+        title_face = Font:getFace("x_smalltfont"),
+    }
+
+    local series_list = {}
+
+    table.insert(series_list, {
+        text = "< " .. _("Back to Library"),
+        callback = function()
+            self:buildLibraryView()
+            UIManager:setDirty(self, "ui")
+        end
+    })
+
+    table.insert(series_list, {
+        text = "",
+        callback = function() end
+    })
+
+    local series_names = {}
+    for series_name, _ in pairs(self.manga_library.reading_progress) do
+        -- Filter out .sdr files (KOReader metadata)
+        if not series_name:match("%.sdr$") then
+            table.insert(series_names, series_name)
+        end
+    end
+    table.sort(series_names)
+
+    for _, series_name in ipairs(series_names) do
+        table.insert(series_list, {
+            text = "[DELETE] " .. series_name,
+            callback = function()
+                self:confirmDeleteSeries(series_name)
+            end
+        })
+    end
+
+    if #series_names == 0 then
+        table.insert(series_list, {
+            text = _("No series in library"),
+            callback = function() end
+        })
+    end
+
+    local content = Menu:new{
+        item_table = series_list,
+        is_borderless = true,
+        is_popout = false,
+        show_parent = self,
+        width = self.width,
+        height = self.height - title_bar:getHeight(),
+    }
+
+    self[1] = FrameContainer:new{
+        background = Blitbuffer.COLOR_WHITE,
+        bordersize = 0,
+        margin = 0,
+        padding = 0,
+        VerticalGroup:new{
+            align = "left",
+            title_bar,
+            content,
+        }
+    }
+
+    UIManager:setDirty(self, "ui")
 end
 
 function MangaLibraryWidget:toggleChapterReadStatus(chapter, series_name)
@@ -1029,8 +1131,9 @@ function MangaLibrary:processMangaSeries(series_path, series_name)
     end
     
     table.sort(chapters, function(a, b)
-        local a_num = tonumber(a.name:match("(%d+)")) or 0
-        local b_num = tonumber(b.name:match("(%d+)")) or 0
+        -- Extract chapter number with decimal support (e.g., 1, 1.5, 10.6)
+        local a_num = tonumber(a.name:match("(%d+%.?%d*)")) or 0
+        local b_num = tonumber(b.name:match("(%d+%.?%d*)")) or 0
         return a_num < b_num
     end)
     
