@@ -1,7 +1,7 @@
 # Manga Library Manager - KOReader Plugin
 
 
-
+FEEL FREE TO FORK AND CHANGE, AND THEN OPEN A PULL REQUEST BACK HERE TO IMPLEMENT THE CHANGES!
 A comprehensive manga library management plugin for KOReader that provides full-screen manga organization, reading progress tracking, and seamless chapter navigation.
 
 ![Manga Library Manager](https://img.shields.io/badge/KOReader-Plugin-blue) ![Version](https://img.shields.io/badge/version-1.0.0-green) ![Tested](https://img.shields.io/badge/tested-Kindle%20PW7-orange)
