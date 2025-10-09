@@ -42,6 +42,10 @@ local GlobalState = {
     current_download = nil,
     downloading_chapters = {},
     active_widget = nil,
+    downloading_message = nil,
+    download_count = 0,
+    completed_downloads = 0,
+    batch_downloading = false,
 }
 
 local function debugLog(msg)
@@ -54,24 +58,94 @@ local function debugLog(msg)
     end
 end
 
+-- FIXED: Safe CBZ creation using KOReader's built-in capabilities
+local function createCBZ(chapter_folder, cbz_path)
+    debugLog("Creating CBZ: " .. cbz_path)
+    
+    -- Method 1: Try KOReader's built-in zipwriter
+    local success, zipwriter = pcall(require, "ffi/zipwriter")
+    if success and zipwriter then
+        debugLog("Using KOReader's zipwriter")
+        local ok, zip = pcall(zipwriter.new, zipwriter, cbz_path)
+        if ok and zip then
+            local images = {}
+            for file in lfs.dir(chapter_folder) do
+                if file ~= "." and file ~= ".." and file:match("%.jpg$") then
+                    table.insert(images, file)
+                end
+            end
+            table.sort(images)
+            
+            for i, img in ipairs(images) do
+                local full_path = chapter_folder .. "/" .. img
+                local padded_name = string.format("%03d.jpg", i)
+                pcall(zip.add, zip, padded_name, full_path)
+            end
+            
+            pcall(zip.close, zip)
+            
+            if lfs.attributes(cbz_path) then
+                debugLog("CBZ created successfully with zipwriter")
+                return true
+            end
+        end
+    end
+    
+    -- Method 2: Try system zip command (if available)
+    debugLog("Trying system zip command")
+    local zip_result = os.execute(string.format('cd "%s" && zip -q -j "%s" *.jpg 2>/dev/null', chapter_folder, cbz_path))
+    if (zip_result == 0 or zip_result == true) and lfs.attributes(cbz_path) then
+        debugLog("CBZ created successfully with system zip")
+        return true
+    end
+    
+    -- Method 3: Try tar (compressed)
+    debugLog("Trying tar with compression")
+    local tar_temp = cbz_path:gsub("%.cbz$", ".tar.gz")
+    local tar_result = os.execute(string.format('cd "%s" && tar -czf "%s" *.jpg 2>/dev/null', chapter_folder, tar_temp))
+    if (tar_result == 0 or tar_result == true) and lfs.attributes(tar_temp) then
+        os.execute(string.format('mv "%s" "%s"', tar_temp, cbz_path))
+        if lfs.attributes(cbz_path) then
+            debugLog("CBZ created successfully with tar")
+            return true
+        end
+    end
+    
+    -- Method 4: Create a simple folder structure that KOReader can read
+    debugLog("All compression methods failed, using folder structure")
+    -- Rename folder to have .cbz extension (KOReader can read this)
+    local folder_as_cbz = cbz_path:gsub("%.cbz$", ".images")
+    os.execute(string.format('mv "%s" "%s"', chapter_folder, folder_as_cbz))
+    
+    -- Create a symlink or marker
+    os.execute(string.format('ln -s "%s" "%s" 2>/dev/null', folder_as_cbz, cbz_path))
+    
+    if lfs.attributes(folder_as_cbz) then
+        debugLog("Using folder structure: " .. folder_as_cbz)
+        -- Update the path to point to the folder
+        return folder_as_cbz
+    end
+    
+    debugLog("All methods failed")
+    return false
+end
+
 -- Enhanced chapter number extraction with multiple patterns
 local function extractChapterNumber(str)
     if not str then return 0 end
     
-    -- Remove any unicode spaces and normalize
-    str = str:gsub("[\194\160]", " ")  -- non-breaking space
-    str = str:gsub("%s+", " ")  -- normalize spaces
+    str = str:gsub("[\194\160]", " ")
+    str = str:gsub("%s+", " ")
     
-    -- Try multiple patterns in order of specificity
     local patterns = {
         "Chapter%s+(%d+%.?%d*)",
         "Ch%.?%s+(%d+%.?%d*)",
         "Chap%.?%s+(%d+%.?%d*)",
         "#(%d+%.?%d*)",
-        "^(%d+%.?%d*)%s*$",  -- Just numbers
-        "^(%d+%.?%d*)[%s%-:]",  -- Numbers at start with separator
-        "[^%d](%d+%.?%d*)$",  -- Numbers at end
-        "(%d+%.?%d*)",  -- Any number
+        "^(%d+%.?%d*)%s*$",
+        "^(%d+%.?%d*)[%s%-:]",
+        "[^%d](%d+%.?%d*)$",
+        "(%d+%.?%d*)",
     }
     
     for _, pattern in ipairs(patterns) do
@@ -209,7 +283,6 @@ function MangaPillAPI:getChapterList(manga_id)
         end
     end
     
-    -- Sort by chapter number (ascending: 1, 2, 3...)
     table.sort(chapters, function(a, b)
         local a_num = a.chapter_num or 0
         local b_num = b.chapter_num or 0
@@ -405,13 +478,13 @@ function MangaLibrary:onEndOfBook()
             if next_online then
                 debugLog("Auto-downloading next chapter: " .. next_online.title)
                 
-                local downloading_msg = InfoMessage:new{
+                GlobalState.downloading_message = InfoMessage:new{
                     text = "Downloading next chapter...\n" .. next_online.title,
                     timeout = false,
                 }
-                UIManager:show(downloading_msg)
+                UIManager:show(GlobalState.downloading_message)
                 
-                self:downloadAndOpenChapter(GlobalState.current_series, next_online, downloading_msg)
+                self:downloadAndOpenChapter(GlobalState.current_series, next_online, GlobalState.downloading_message)
                 return true
             end
         end
@@ -440,7 +513,6 @@ function MangaLibrary:getNextOnlineChapter(series_name)
         return nil
     end
     
-    -- Build set of downloaded chapter numbers
     local downloaded_nums = {}
     if series_data.chapters then
         for _, ch in ipairs(series_data.chapters) do
@@ -449,7 +521,6 @@ function MangaLibrary:getNextOnlineChapter(series_name)
         end
     end
     
-    -- Find the first online chapter that isn't downloaded
     for _, online_ch in ipairs(series_data.online_chapters) do
         if not downloaded_nums[online_ch.chapter_num or 0] then
             return online_ch
@@ -478,6 +549,7 @@ function MangaLibrary:downloadAndOpenChapter(series_name, chapter, loading_msg)
     
     if #images == 0 then
         UIManager:close(loading_msg)
+        GlobalState.downloading_message = nil
         UIManager:show(InfoMessage:new{
             text = "Failed to download next chapter",
             timeout = 2,
@@ -490,18 +562,29 @@ function MangaLibrary:downloadAndOpenChapter(series_name, chapter, loading_msg)
     end
     
     local cbz_path = series_folder .. "/" .. chapter.title:gsub("[^%w%s%-]", "") .. ".cbz"
-    os.execute(string.format('cd "%s" && zip -q -j "%s" *.jpg 2>&1', chapter_folder, cbz_path))
-    os.execute("rm -rf '" .. chapter_folder .. "'")
     
-    self:refreshSpecificSeries(series_name)
-    
-    UIManager:close(loading_msg)
-    
-    self:show({series = series_name, path = cbz_path})
-    UIManager:show(InfoMessage:new{
-        text = "Next: " .. chapter.title,
-        timeout = 1,
-    })
+    local result = createCBZ(chapter_folder, cbz_path)
+    if result then
+        local final_path = type(result) == "string" and result or cbz_path
+        if type(result) ~= "string" then
+            os.execute("rm -rf '" .. chapter_folder .. "'")
+        end
+        self:refreshSpecificSeries(series_name)
+        UIManager:close(loading_msg)
+        GlobalState.downloading_message = nil
+        self:show({series = series_name, path = final_path})
+        UIManager:show(InfoMessage:new{
+            text = "Next: " .. chapter.title,
+            timeout = 1,
+        })
+    else
+        UIManager:close(loading_msg)
+        GlobalState.downloading_message = nil
+        UIManager:show(InfoMessage:new{
+            text = "Failed to create chapter file",
+            timeout = 2,
+        })
+    end
 end
 
 function MangaLibrary:getNextChapter(series_name, current_path)
@@ -522,6 +605,10 @@ end
 function MangaLibrary:onReaderUiCloseWidget()
     debugLog("ReaderUI closing, resetting is_showing")
     GlobalState.is_showing = false
+    if GlobalState.downloading_message then
+        UIManager:close(GlobalState.downloading_message)
+        GlobalState.downloading_message = nil
+    end
 end
 
 function MangaLibrary:markChapter(series_name, chapter_path, is_read)
@@ -703,6 +790,20 @@ function MangaLibraryWidget:getMangaList()
 end
 
 function MangaLibraryWidget:showSettings()
+    self.current_view = "settings"
+    
+    local title_bar = TitleBar:new{
+        width = self.width,
+        align = "center",
+        title = _("Settings"),
+        title_face = Font:getFace("x_smalltfont"),
+        left_icon = "appbar.back",
+        left_icon_tap_callback = function()
+            self:buildLibraryView()
+            UIManager:setDirty(self, "ui")
+        end,
+    }
+    
     local folder_count = #self.manga_library.manga_folders
     local folder_text = folder_count > 0 and
         _("Manage Folders") .. " (" .. folder_count .. ")" or
@@ -713,70 +814,80 @@ function MangaLibraryWidget:showSettings()
         queue_text = queue_text .. " (" .. tostring(#GlobalState.download_queue) .. ")"
     end
     
-    local buttons = {
-        {{
+    local settings_items = {
+        {
             text = folder_text,
             callback = function()
-                UIManager:close(self.settings_dialog)
                 self:showFolderManagement()
             end,
-        }},
-        {{
+        },
+        {
             text = _("Manage Series"),
             callback = function()
-                UIManager:close(self.settings_dialog)
                 self:showManageSeriesScreen()
             end,
-        }},
-        {{
+        },
+        {
             text = _("Search MangaPill"),
             callback = function()
-                UIManager:close(self.settings_dialog)
                 self:showMangaPillSearch()
             end,
-        }},
-        {{
+        },
+        {
             text = queue_text,
             callback = function()
-                UIManager:close(self.settings_dialog)
                 self:showDownloadQueue()
             end,
-        }},
-        {{
+        },
+        {
             text = _("Check for Updates"),
             callback = function()
-                UIManager:close(self.settings_dialog)
                 self.manga_library:checkForUpdates()
             end,
-        }},
-        {{
+        },
+        {
             text = _("Refresh Library"),
             callback = function()
-                UIManager:close(self.settings_dialog)
                 self:refreshLibrary()
             end,
-        }},
-        {{
+        },
+        {
             text = _("View Error Log"),
             callback = function()
-                UIManager:close(self.settings_dialog)
                 self:showErrorLog()
             end,
-        }},
-        {{
-            text = _("Close"),
+        },
+        {
+            text = _("Return to Library"),
             callback = function()
-                UIManager:close(self.settings_dialog)
+                self:buildLibraryView()
+                UIManager:setDirty(self, "ui")
             end,
-        }},
+        },
     }
     
-    self.settings_dialog = ButtonDialog:new{
-        title = _("Manga Library Settings"),
-        title_align = "center",
-        buttons = buttons,
+    local content = Menu:new{
+        item_table = settings_items,
+        is_borderless = true,
+        is_popout = false,
+        show_parent = self,
+        width = self.width,
+        height = self.height - title_bar:getHeight(),
     }
-    UIManager:show(self.settings_dialog)
+    
+    self[1] = FrameContainer:new{
+        background = Blitbuffer.COLOR_WHITE,
+        bordersize = 0,
+        margin = 0,
+        padding = 0,
+        VerticalGroup:new{
+            align = "left",
+            title_bar,
+            content,
+        }
+    }
+    
+    UIManager:setDirty(self, "ui")
 end
 
 function MangaLibraryWidget:showMangaPillSearch()
@@ -944,10 +1055,15 @@ function MangaLibraryWidget:showDownloadRangeDialog(manga, chapters)
                     end_ch = tonumber(end_ch)
                     
                     if start_ch and end_ch and start_ch <= end_ch and start_ch >= 1 and end_ch <= #ch then
-                        UIManager:show(InfoMessage:new{
-                            text = "Downloading chapters " .. start_ch .. "-" .. end_ch .. " in background...",
-                            timeout = 2,
-                        })
+                        GlobalState.batch_downloading = true
+                        GlobalState.download_count = end_ch - start_ch + 1
+                        GlobalState.completed_downloads = 0
+                        
+                        GlobalState.downloading_message = InfoMessage:new{
+                            text = "Downloading " .. tostring(GlobalState.download_count) .. " chapters in background...\nDo not close the app.",
+                            timeout = false,
+                        }
+                        UIManager:show(GlobalState.downloading_message)
                         
                         for i = start_ch, end_ch do
                             widget:queueDownload(m, ch[i], true)
@@ -1060,6 +1176,20 @@ function MangaLibraryWidget:processDownloadQueue()
     if #GlobalState.download_queue == 0 then
         GlobalState.is_downloading = false
         GlobalState.current_download = nil
+        
+        if GlobalState.batch_downloading then
+            if GlobalState.downloading_message then
+                UIManager:close(GlobalState.downloading_message)
+            end
+            GlobalState.downloading_message = InfoMessage:new{
+                text = "Downloads Complete!\n" .. tostring(GlobalState.completed_downloads) .. " chapters downloaded.",
+                timeout = 3,
+            }
+            UIManager:show(GlobalState.downloading_message)
+            GlobalState.batch_downloading = false
+            GlobalState.download_count = 0
+            GlobalState.completed_downloads = 0
+        end
         return
     end
     
@@ -1068,24 +1198,37 @@ function MangaLibraryWidget:processDownloadQueue()
     GlobalState.current_download = download_item
     download_item.status = "downloading"
     
-    -- Start async download
-    self:downloadChapterAsync(download_item.manga, download_item.chapter, download_item.background, function()
-        table.remove(GlobalState.download_queue, 1)
-        self:processDownloadQueue()
+    UIManager:scheduleIn(0.1, function()
+        self:downloadChapter(download_item.manga, download_item.chapter, download_item.background, function()
+            table.remove(GlobalState.download_queue, 1)
+            
+            if GlobalState.batch_downloading then
+                GlobalState.completed_downloads = GlobalState.completed_downloads + 1
+                
+                if GlobalState.downloading_message then
+                    UIManager:close(GlobalState.downloading_message)
+                    GlobalState.downloading_message = InfoMessage:new{
+                        text = "Downloading chapters... (" .. tostring(GlobalState.completed_downloads) .. "/" .. tostring(GlobalState.download_count) .. ")\nDo not close the app.",
+                        timeout = false,
+                    }
+                    UIManager:show(GlobalState.downloading_message)
+                end
+            end
+            
+            self:processDownloadQueue()
+        end)
     end)
 end
 
--- NEW: Async download with yielding
-function MangaLibraryWidget:downloadChapterAsync(manga, chapter, background_mode, callback)
+function MangaLibraryWidget:downloadChapter(manga, chapter, background_mode, callback)
     local download_base = self.manga_library.manga_folders[1] or DataStorage:getDataDir() .. "/manga"
     local series_folder = download_base .. "/" .. manga.title:gsub("[^%w%s%-]", "")
     local chapter_folder = series_folder .. "/" .. chapter.title:gsub("[^%w%s%-]", "")
     
     os.execute("mkdir -p '" .. chapter_folder .. "'")
     
-    debugLog("Async downloading chapter: " .. chapter.title)
+    debugLog("Downloading chapter: " .. chapter.title)
     
-    -- Get images list first
     local images = MangaPillAPI:getChapterImages(chapter.url)
     
     if #images == 0 then
@@ -1096,65 +1239,51 @@ function MangaLibraryWidget:downloadChapterAsync(manga, chapter, background_mode
         return
     end
     
-    -- Download images one at a time with yielding
-    local image_index = 1
-    local downloaded_count = 0
-    
-    local function downloadNextImage()
-        if image_index > #images then
-            -- All images downloaded, create CBZ
-            debugLog("Downloaded " .. tostring(downloaded_count) .. " / " .. tostring(#images) .. " images")
-            
-            if downloaded_count == 0 then
-                os.execute("rm -rf '" .. chapter_folder .. "'")
-                local key = manga.title .. ":" .. chapter.title
-                GlobalState.downloading_chapters[key] = nil
-                if callback then callback() end
-                return
-            end
-            
-            local cbz_path = series_folder .. "/" .. chapter.title:gsub("[^%w%s%-]", "") .. ".cbz"
-            os.execute(string.format('cd "%s" && zip -q -j "%s" *.jpg 2>&1', chapter_folder, cbz_path))
-            os.execute("rm -rf '" .. chapter_folder .. "'")
-            
-            local cbz_exists = lfs.attributes(cbz_path)
-            if cbz_exists then
-                debugLog("CBZ created successfully: " .. cbz_path)
-                
-                self.manga_library:refreshSpecificSeries(manga.title)
-                self.cache_valid = false
-                
-                if background_mode then
-                    UIManager:show(InfoMessage:new{
-                        text = "Download Complete:\n" .. manga.title .. "\n" .. chapter.title,
-                        timeout = 2,
-                    })
-                end
-            end
-            
-            local key = manga.title .. ":" .. chapter.title
-            GlobalState.downloading_chapters[key] = nil
-            
-            if callback then callback() end
-            return
-        end
-        
-        -- Download one image
-        local img_url = images[image_index]
-        local dest = string.format("%s/%03d.jpg", chapter_folder, image_index)
+    local downloaded = 0
+    for i, img_url in ipairs(images) do
+        local dest = string.format("%s/%03d.jpg", chapter_folder, i)
         local success = MangaPillAPI:downloadImage(img_url, dest, chapter.url)
         if success then
-            downloaded_count = downloaded_count + 1
+            downloaded = downloaded + 1
         end
-        
-        image_index = image_index + 1
-        
-        -- Schedule next image download (yield to UI)
-        UIManager:scheduleIn(0.01, downloadNextImage)
     end
     
-    -- Start downloading
-    downloadNextImage()
+    if downloaded == 0 then
+        os.execute("rm -rf '" .. chapter_folder .. "'")
+        local key = manga.title .. ":" .. chapter.title
+        GlobalState.downloading_chapters[key] = nil
+        if callback then callback() end
+        return
+    end
+    
+    local cbz_path = series_folder .. "/" .. chapter.title:gsub("[^%w%s%-]", "") .. ".cbz"
+    
+    local result = createCBZ(chapter_folder, cbz_path)
+    
+    if result then
+        if type(result) ~= "string" then
+            os.execute("rm -rf '" .. chapter_folder .. "'")
+        end
+        debugLog("Chapter packaged successfully")
+        
+        self.manga_library:refreshSpecificSeries(manga.title)
+        self.cache_valid = false
+        
+        if background_mode and not GlobalState.batch_downloading then
+            UIManager:show(InfoMessage:new{
+                text = "Download Complete:\n" .. manga.title .. "\n" .. chapter.title,
+                timeout = 2,
+            })
+        end
+    else
+        os.execute("rm -rf '" .. chapter_folder .. "'")
+        debugLog("Failed to package chapter")
+    end
+    
+    local key = manga.title .. ":" .. chapter.title
+    GlobalState.downloading_chapters[key] = nil
+    
+    if callback then callback() end
 end
 
 function MangaLibraryWidget:downloadMultipleChapters(manga, chapters)
@@ -1166,10 +1295,15 @@ function MangaLibraryWidget:downloadMultipleChapters(manga, chapters)
         text = "Download all " .. tostring(#chapters) .. " chapters in background?",
         ok_text = "Download All",
         ok_callback = function()
-            UIManager:show(InfoMessage:new{
-                text = "Downloading " .. tostring(#chapters) .. " chapters in background...",
-                timeout = 2,
-            })
+            GlobalState.batch_downloading = true
+            GlobalState.download_count = #chapters
+            GlobalState.completed_downloads = 0
+            
+            GlobalState.downloading_message = InfoMessage:new{
+                text = "Downloading " .. tostring(#chapters) .. " chapters in background...\nDo not close the app.",
+                timeout = false,
+            }
+            UIManager:show(GlobalState.downloading_message)
             
             for _, chapter in ipairs(ch) do
                 widget:queueDownload(m, chapter, true)
@@ -1206,6 +1340,13 @@ function MangaLibraryWidget:showDownloadQueue()
         callback = function()
             GlobalState.download_queue = {}
             GlobalState.downloading_chapters = {}
+            GlobalState.batch_downloading = false
+            GlobalState.download_count = 0
+            GlobalState.completed_downloads = 0
+            if GlobalState.downloading_message then
+                UIManager:close(GlobalState.downloading_message)
+                GlobalState.downloading_message = nil
+            end
             widget:showDownloadQueue()
         end
     })
@@ -1264,13 +1405,16 @@ function MangaLibraryWidget:showManageSeriesScreen()
         align = "center",
         title = _("Manage Series"),
         title_face = Font:getFace("x_smalltfont"),
+        left_icon = "appbar.back",
+        left_icon_tap_callback = function()
+            self:showSettings()
+        end,
     }
     local series_list = {}
     table.insert(series_list, {
-        text = "< " .. _("Back to Library"),
+        text = "< Return to Settings",
         callback = function()
-            self:buildLibraryView()
-            UIManager:setDirty(self, "ui")
+            self:showSettings()
         end
     })
     
@@ -1701,10 +1845,8 @@ function MangaLibraryWidget:showChapterView(series_name)
         end
     })
     
-    -- Build unified list of ALL chapters (downloaded + online)
     local all_chapters = {}
     
-    -- Add downloaded chapters
     local downloaded_nums = {}
     if series_data.chapters then
         for _, chapter in ipairs(series_data.chapters) do
@@ -1720,7 +1862,6 @@ function MangaLibraryWidget:showChapterView(series_name)
         end
     end
     
-    -- Add online chapters that aren't downloaded
     if series_data.online_chapters then
         for _, online_ch in ipairs(series_data.online_chapters) do
             if not downloaded_nums[online_ch.chapter_num or 0] then
@@ -1736,7 +1877,6 @@ function MangaLibraryWidget:showChapterView(series_name)
         end
     end
     
-    -- Sort ALL chapters by number with stable secondary sort
     table.sort(all_chapters, function(a, b)
         local a_num = a.chapter_num or 0
         local b_num = b.chapter_num or 0
@@ -1751,7 +1891,12 @@ function MangaLibraryWidget:showChapterView(series_name)
         return a_num < b_num
     end)
     
-    -- Display sorted chapters
+    debugLog("Unified chapter list: " .. tostring(#all_chapters) .. " chapters")
+    if #all_chapters > 0 then
+        debugLog("First chapter num: " .. tostring(all_chapters[1].chapter_num))
+        debugLog("Last chapter num: " .. tostring(all_chapters[#all_chapters].chapter_num))
+    end
+    
     for _, ch_info in ipairs(all_chapters) do
         if ch_info.type == "downloaded" then
             local status_icon = ch_info.is_read and "[✓] " or "[ ] "
@@ -1828,7 +1973,6 @@ function MangaLibraryWidget:showDownloadNextUnreadDialog(series_name)
                         return
                     end
                     
-                    -- Build set of downloaded chapter numbers
                     local downloaded_nums = {}
                     if series_data.chapters then
                         for _, ch in ipairs(series_data.chapters) do
@@ -1837,7 +1981,6 @@ function MangaLibraryWidget:showDownloadNextUnreadDialog(series_name)
                         end
                     end
                     
-                    -- Queue next X undownloaded chapters
                     local to_download = {}
                     
                     for _, online_ch in ipairs(series_data.online_chapters or {}) do
@@ -1854,10 +1997,15 @@ function MangaLibraryWidget:showDownloadNextUnreadDialog(series_name)
                         return
                     end
                     
-                    UIManager:show(InfoMessage:new{
-                        text = "Downloading " .. tostring(#to_download) .. " chapters in background...",
-                        timeout = 2,
-                    })
+                    GlobalState.batch_downloading = true
+                    GlobalState.download_count = #to_download
+                    GlobalState.completed_downloads = 0
+                    
+                    GlobalState.downloading_message = InfoMessage:new{
+                        text = "Downloading " .. tostring(#to_download) .. " chapters in background...\nDo not close the app.",
+                        timeout = false,
+                    }
+                    UIManager:show(GlobalState.downloading_message)
                     
                     local m = {title = series_name, id = series_data.manga_id}
                     for _, chapter in ipairs(to_download) do
