@@ -27,10 +27,9 @@ local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
 local _ = require("gettext")
 
--- HTTP for MangaPill
-local socket = require("socket")
-local http = require("socket.http")
-local ltn12 = require("ltn12")
+local MangaPillAPI = require("api/mangapill")
+local Utils = require("utils")
+
 
 local GlobalState = {
     is_showing = false,
@@ -131,214 +130,11 @@ local function createCBZ(chapter_folder, cbz_path)
 end
 
 -- Enhanced chapter number extraction with multiple patterns
-local function extractChapterNumber(str)
-    if not str then return 0 end
-    
-    str = str:gsub("[\194\160]", " ")
-    str = str:gsub("%s+", " ")
-    
-    local patterns = {
-        "Chapter%s+(%d+%.?%d*)",
-        "Ch%.?%s+(%d+%.?%d*)",
-        "Chap%.?%s+(%d+%.?%d*)",
-        "#(%d+%.?%d*)",
-        "^(%d+%.?%d*)%s*$",
-        "^(%d+%.?%d*)[%s%-:]",
-        "[^%d](%d+%.?%d*)$",
-        "(%d+%.?%d*)",
-    }
-    
-    for _, pattern in ipairs(patterns) do
-        local num = str:match(pattern)
-        if num then
-            local parsed = tonumber(num)
-            if parsed and parsed > 0 then
-                return parsed
-            end
-        end
-    end
-    
-    return 0
-end
 
--- MangaPill API
-local MangaPillAPI = {
-    base_url = "https://mangapill.com",
-}
 
-function MangaPillAPI:makeRequest(path)
-    local url = self.base_url .. path
-    local response_body = {}
-    local result, status_code = http.request{
-        url = url,
-        method = "GET",
-        headers = {["User-Agent"] = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"},
-        sink = ltn12.sink.table(response_body)
-    }
-    if result and status_code == 200 then
-        return table.concat(response_body)
-    end
-    debugLog("HTTP request failed: " .. tostring(status_code))
-    return nil
-end
 
-function MangaPillAPI:search(query)
-    debugLog("Searching for: " .. query)
-    local encoded = query:gsub(" ", "+")
-    local html = self:makeRequest("/search?q=" .. encoded)
-    if not html then 
-        debugLog("Search request failed")
-        return {} 
-    end
-    
-    local results = {}
-    
-    for url, title in html:gmatch('<a%s+href="(/manga/[^"]+)"[^>]*>.-<div[^>]*>([^<]+)</div>') do
-        local id = url:match("/manga/([^/]+)")
-        if id then
-            table.insert(results, {
-                id = id,
-                title = title:gsub("^%s*(.-)%s*$", "%1"),
-                url = self.base_url .. url,
-            })
-            if #results >= 15 then break end
-        end
-    end
-    
-    if #results == 0 then
-        for url in html:gmatch('href="(/manga/[^"]+)"') do
-            local id = url:match("/manga/([^/]+)")
-            if id then
-                local title = id:gsub("%-", " "):gsub("(%a)(%w*)", function(a,b) return a:upper()..b end)
-                table.insert(results, {
-                    id = id,
-                    title = title,
-                    url = self.base_url .. url,
-                })
-                if #results >= 15 then break end
-            end
-        end
-    end
-    
-    debugLog("Found " .. tostring(#results) .. " results")
-    return results
-end
 
-function MangaPillAPI:getChapterList(manga_id)
-    debugLog("Fetching chapters for: " .. manga_id)
-    local html = self:makeRequest("/manga/" .. manga_id)
-    if not html then 
-        debugLog("Failed to get HTML")
-        return {} 
-    end
-    
-    local chapters = {}
-    
-    for url, title in html:gmatch('<a[^>]+href="(/chapters/[^"]+)"[^>]*>%s*([^<]+)%s*</a>') do
-        local ch_num = extractChapterNumber(title)
-        table.insert(chapters, {
-            title = title:gsub("^%s*(.-)%s*$", "%1"),
-            url = self.base_url .. url,
-            chapter_id = url:match("/chapters/([^/]+)"),
-            chapter_num = ch_num,
-        })
-    end
-    
-    if #chapters == 0 then
-        for url, title in html:gmatch('data%-href="(/chapters/[^"]+)"[^>]*>%s*<[^>]+>([^<]+)</') do
-            local ch_num = extractChapterNumber(title)
-            table.insert(chapters, {
-                title = title:gsub("^%s*(.-)%s*$", "%1"),
-                url = self.base_url .. url,
-                chapter_id = url:match("/chapters/([^/]+)"),
-                chapter_num = ch_num,
-            })
-        end
-    end
-    
-    if #chapters == 0 then
-        for title, url in html:gmatch('<div[^>]*>([^<]+)</div>%s*<a[^>]+href="(/chapters/[^"]+)"') do
-            local ch_num = extractChapterNumber(title)
-            table.insert(chapters, {
-                title = title:gsub("^%s*(.-)%s*$", "%1"),
-                url = self.base_url .. url,
-                chapter_id = url:match("/chapters/([^/]+)"),
-                chapter_num = ch_num,
-            })
-        end
-    end
-    
-    if #chapters == 0 then
-        for url in html:gmatch('href="(/chapters/[^"]+)"') do
-            local chapter_id = url:match("/chapters/([^/]+)")
-            if chapter_id then
-                local ch_num = extractChapterNumber(chapter_id)
-                table.insert(chapters, {
-                    title = "Chapter " .. chapter_id,
-                    url = self.base_url .. url,
-                    chapter_id = chapter_id,
-                    chapter_num = ch_num,
-                })
-            end
-        end
-    end
-    
-    table.sort(chapters, function(a, b)
-        local a_num = a.chapter_num or 0
-        local b_num = b.chapter_num or 0
-        if a_num == b_num then
-            return (a.title or "") < (b.title or "")
-        end
-        return a_num < b_num
-    end)
-    
-    debugLog("Sorted " .. tostring(#chapters) .. " chapters")
-    return chapters
-end
 
-function MangaPillAPI:getChapterImages(chapter_url)
-    local path = chapter_url:gsub(self.base_url, "")
-    local html = self:makeRequest(path)
-    if not html then return {} end
-    local images = {}
-    for img in html:gmatch('<img[^>]+data%-src="([^"]+)"') do
-        table.insert(images, img)
-    end
-    if #images == 0 then
-        for img in html:gmatch('<img[^>]+src="(https://[^"]+%.jpg[^"]*)"') do
-            table.insert(images, img)
-        end
-    end
-    return images
-end
-
-function MangaPillAPI:downloadImage(url, dest_path, referer)
-    local response_body = {}
-    local headers = {
-        ["User-Agent"] = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
-    }
-    
-    if referer then
-        headers["Referer"] = referer
-    end
-    
-    local result, status_code = http.request{
-        url = url,
-        method = "GET",
-        headers = headers,
-        sink = ltn12.sink.table(response_body)
-    }
-    
-    if result and status_code == 200 then
-        local file = io.open(dest_path, "wb")
-        if file then
-            file:write(table.concat(response_body))
-            file:close()
-            return true
-        end
-    end
-    return false
-end
 
 local MangaLibrary = WidgetContainer:extend{
     name = "mangalibrary",
@@ -516,7 +312,7 @@ function MangaLibrary:getNextOnlineChapter(series_name)
     local downloaded_nums = {}
     if series_data.chapters then
         for _, ch in ipairs(series_data.chapters) do
-            local num = extractChapterNumber(ch.name)
+            local num = Utils.extractChapterNumber(ch.name)
             downloaded_nums[num] = true
         end
     end
@@ -1850,7 +1646,7 @@ function MangaLibraryWidget:showChapterView(series_name)
     local downloaded_nums = {}
     if series_data.chapters then
         for _, chapter in ipairs(series_data.chapters) do
-            local ch_num = extractChapterNumber(chapter.name)
+            local ch_num = Utils.extractChapterNumber(chapter.name)
             downloaded_nums[ch_num] = true
             
             table.insert(all_chapters, {
@@ -1976,7 +1772,7 @@ function MangaLibraryWidget:showDownloadNextUnreadDialog(series_name)
                     local downloaded_nums = {}
                     if series_data.chapters then
                         for _, ch in ipairs(series_data.chapters) do
-                            local num = extractChapterNumber(ch.name)
+                            local num = Utils.extractChapterNumber(ch.name)
                             downloaded_nums[num] = true
                         end
                     end
@@ -2256,8 +2052,8 @@ function MangaLibrary:processMangaSeries(series_path, series_name)
     end
     
     table.sort(chapters, function(a, b)
-        local a_num = extractChapterNumber(a.name)
-        local b_num = extractChapterNumber(b.name)
+        local a_num = Utils.extractChapterNumber(a.name)
+        local b_num = Utils.extractChapterNumber(b.name)
         if a_num == b_num then
             return a.name < b.name
         end
