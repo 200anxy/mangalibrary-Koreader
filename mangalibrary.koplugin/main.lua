@@ -24,12 +24,11 @@ local UIManager = require("ui/uimanager")
 local VerticalGroup = require("ui/widget/verticalgroup")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local lfs = require("libs/libkoreader-lfs")
-local logger = require("logger")
 local _ = require("gettext")
 
 local MangaPillAPI = require("api/mangapill")
 local Utils = require("utils")
-local Logger = require("logger")
+local Logger = require("logger_module")
 
 
 local GlobalState = {
@@ -50,12 +49,11 @@ local GlobalState = {
 
 -- FIXED: Safe CBZ creation using KOReader's built-in capabilities
 local function createCBZ(chapter_folder, cbz_path)
-    Logger:debug("Creating CBZ: " .. cbz_path)
-    
+    Logger.debug("Creating CBZ: " .. cbz_path)
     -- Method 1: Try KOReader's built-in zipwriter
     local success, zipwriter = pcall(require, "ffi/zipwriter")
     if success and zipwriter then
-        Logger:debug("Using KOReader's zipwriter")
+        Logger.debug("Using KOReader's zipwriter")
         local ok, zip = pcall(zipwriter.new, zipwriter, cbz_path)
         if ok and zip then
             local images = {}
@@ -75,34 +73,34 @@ local function createCBZ(chapter_folder, cbz_path)
             pcall(zip.close, zip)
             
             if lfs.attributes(cbz_path) then
-                Logger:debug("CBZ created successfully with zipwriter")
+                Logger.debug("CBZ created successfully with zipwriter")
                 return true
             end
         end
     end
     
     -- Method 2: Try system zip command (if available)
-    Logger:debug("Trying system zip command")
+    Logger.debug("Trying system zip command")
     local zip_result = os.execute(string.format('cd "%s" && zip -q -j "%s" *.jpg 2>/dev/null', chapter_folder, cbz_path))
     if (zip_result == 0 or zip_result == true) and lfs.attributes(cbz_path) then
-        Logger:debug("CBZ created successfully with system zip")
+        Logger.debug("CBZ created successfully with system zip")
         return true
     end
     
     -- Method 3: Try tar (compressed)
-    Logger:debug("Trying tar with compression")
+    Logger.debug("Trying tar with compression")
     local tar_temp = cbz_path:gsub("%.cbz$", ".tar.gz")
     local tar_result = os.execute(string.format('cd "%s" && tar -czf "%s" *.jpg 2>/dev/null', chapter_folder, tar_temp))
     if (tar_result == 0 or tar_result == true) and lfs.attributes(tar_temp) then
         os.execute(string.format('mv "%s" "%s"', tar_temp, cbz_path))
         if lfs.attributes(cbz_path) then
-            Logger:debug("CBZ created successfully with tar")
+            Logger.debug("CBZ created successfully with tar")
             return true
         end
     end
     
     -- Method 4: Create a simple folder structure that KOReader can read
-    Logger:debug("All compression methods failed, using folder structure")
+    Logger.debug("All compression methods failed, using folder structure")
     -- Rename folder to have .cbz extension (KOReader can read this)
     local folder_as_cbz = cbz_path:gsub("%.cbz$", ".images")
     os.execute(string.format('mv "%s" "%s"', chapter_folder, folder_as_cbz))
@@ -111,12 +109,12 @@ local function createCBZ(chapter_folder, cbz_path)
     os.execute(string.format('ln -s "%s" "%s" 2>/dev/null', folder_as_cbz, cbz_path))
     
     if lfs.attributes(folder_as_cbz) then
-        Logger:debug("Using folder structure: " .. folder_as_cbz)
+        Logger.debug("Using folder structure: " .. folder_as_cbz)
         -- Update the path to point to the folder
         return folder_as_cbz
     end
     
-    Logger:debug("All methods failed")
+    Logger.debug("All methods failed")
     return false
 end
 
@@ -137,30 +135,30 @@ local MangaLibraryWidget = InputContainer:extend{
 }
 
 function MangaLibrary:init()
-    Logger:debug("MangaLibrary:init() starting")
+    Logger.debug("MangaLibrary:init() starting")
     self.settings_file = DataStorage:getSettingsDir() .. "/manga_library.lua"
     self.settings = LuaSettings:open(self.settings_file)
     self.manga_folders = self.settings:readSetting("manga_folders") or {}
     self.reading_progress = self.settings:readSetting("reading_progress") or {}
     self.last_update_check = self.settings:readSetting("last_update_check") or 0
-    Logger:debug("Registering to main menu")
+    Logger.debug("Registering to main menu")
     self.ui.menu:registerToMainMenu(self)
     
     self:checkForUpdates()
     
     if self.ui and self.ui.name == "ReaderUI" then
-        Logger:debug("Init: Detected ReaderUI context")
+        Logger.debug("Init: Detected ReaderUI context")
         if self.ui.registerPostInitCallback then
             self.ui:registerPostInitCallback(function()
-                Logger:debug("PostInit: Hooking into ReaderUI")
+                Logger.debug("PostInit: Hooking into ReaderUI")
                 self:hookWithPriorityOntoReaderUiEvents(self.ui)
             end)
         end
     else
-        Logger:debug("Init: Not ReaderUI context")
+        Logger.debug("Init: Not ReaderUI context")
     end
     
-    Logger:debug("MangaLibrary:init() complete")
+    Logger.debug("MangaLibrary:init() complete")
 end
 
 function MangaLibrary:checkForUpdates()
@@ -168,11 +166,11 @@ function MangaLibrary:checkForUpdates()
     local week_in_seconds = 7 * 24 * 60 * 60
     
     if current_time - self.last_update_check < week_in_seconds then
-        Logger:debug("Skipping update check - last checked recently")
+        Logger.debug("Skipping update check - last checked recently")
         return
     end
     
-    Logger:debug("Checking for manga updates...")
+    Logger.debug("Checking for manga updates...")
     self.last_update_check = current_time
     self.settings:saveSetting("last_update_check", current_time)
     self.settings:flush()
@@ -184,7 +182,7 @@ function MangaLibrary:checkForUpdates()
             if #new_chapters > #series_data.online_chapters then
                 updates_found = updates_found + (#new_chapters - #series_data.online_chapters)
                 series_data.online_chapters = new_chapters
-                Logger:debug("Found " .. tostring(#new_chapters - #series_data.online_chapters) .. " new chapters for " .. series_name)
+                Logger.debug("Found " .. tostring(#new_chapters - #series_data.online_chapters) .. " new chapters for " .. series_name)
             end
         end
     end
@@ -201,16 +199,16 @@ end
 
 function MangaLibrary:hookWithPriorityOntoReaderUiEvents(ui)
     if ui._ml_hooked then
-        Logger:debug("Already hooked")
+        Logger.debug("Already hooked")
         return
     end
     
-    Logger:debug("Hooking onto ReaderUI events")
+    Logger.debug("Hooking onto ReaderUI events")
     local eventListener = WidgetContainer:new({})
     local plugin = self
     
     eventListener.onEndOfBook = function()
-        Logger:debug(">>> eventListener.onEndOfBook FIRED <<<")
+        Logger.debug(">>> eventListener.onEndOfBook FIRED <<<")
         return plugin:onEndOfBook()
     end
     
@@ -221,19 +219,19 @@ function MangaLibrary:hookWithPriorityOntoReaderUiEvents(ui)
     
     table.insert(ui, 2, eventListener)
     ui._ml_hooked = true
-    Logger:debug("✓✓✓ Event listener hooked at position 2 ✓✓✓")
+    Logger.debug("✓✓✓ Event listener hooked at position 2 ✓✓✓")
 end
 
 function MangaLibrary:show(options)
-    Logger:debug("show() called with path: " .. options.path)
+    Logger.debug("show() called with path: " .. options.path)
     GlobalState.current_series = options.series
     GlobalState.current_chapter_path = options.path
     
     if GlobalState.is_showing and ReaderUI.instance then
-        Logger:debug("Using switchDocument")
+        Logger.debug("Using switchDocument")
         ReaderUI.instance:switchDocument(options.path)
     else
-        Logger:debug("Using showReader")
+        Logger.debug("Using showReader")
         UIManager:broadcastEvent(Event:new("SetupShowReader"))
         ReaderUI:showReader(options.path)
     end
@@ -242,15 +240,15 @@ function MangaLibrary:show(options)
 end
 
 function MangaLibrary:onEndOfBook()
-    Logger:debug(">>> onEndOfBook CALLED <<<")
+    Logger.debug(">>> onEndOfBook CALLED <<<")
     
     if not GlobalState.is_showing then
-        Logger:debug("is_showing=false, not handling")
+        Logger.debug("is_showing=false, not handling")
         return false
     end
     
     if not (GlobalState.current_series and GlobalState.current_chapter_path) then
-        Logger:debug("No current series/chapter")
+        Logger.debug("No current series/chapter")
         return false
     end
     
@@ -263,7 +261,7 @@ function MangaLibrary:onEndOfBook()
         if series_data and series_data.manga_id and series_data.online_chapters then
             local next_online = self:getNextOnlineChapter(GlobalState.current_series)
             if next_online then
-                Logger:debug("Auto-downloading next chapter: " .. next_online.title)
+                Logger.debug("Auto-downloading next chapter: " .. next_online.title)
                 
                 GlobalState.downloading_message = InfoMessage:new{
                     text = "Downloading next chapter...\n" .. next_online.title,
@@ -276,7 +274,7 @@ function MangaLibrary:onEndOfBook()
             end
         end
         
-        Logger:debug("No next chapter")
+        Logger.debug("No next chapter")
         GlobalState.is_showing = false
         UIManager:show(InfoMessage:new{
             text = _("All downloaded chapters complete!"),
@@ -285,7 +283,7 @@ function MangaLibrary:onEndOfBook()
         return true
     end
     
-    Logger:debug("Switching to: " .. next_chapter.name)
+    Logger.debug("Switching to: " .. next_chapter.name)
     self:show({series = GlobalState.current_series, path = next_chapter.path})
     UIManager:show(InfoMessage:new{
         text = _("Next: ") .. next_chapter.name,
@@ -390,7 +388,7 @@ function MangaLibrary:getNextChapter(series_name, current_path)
 end
 
 function MangaLibrary:onReaderUiCloseWidget()
-    Logger:debug("ReaderUI closing, resetting is_showing")
+    Logger.debug("ReaderUI closing, resetting is_showing")
     GlobalState.is_showing = false
     if GlobalState.downloading_message then
         UIManager:close(GlobalState.downloading_message)
@@ -440,11 +438,11 @@ end
 function MangaLibrary:refreshSpecificSeries(series_name)
     local series_data = self.reading_progress[series_name]
     if not series_data or not series_data.folder_path then
-        Logger:debug("Cannot refresh series: no folder path")
+        Logger.debug("Cannot refresh series: no folder path")
         return
     end
     
-    Logger:debug("Refreshing series: " .. series_name)
+    Logger.debug("Refreshing series: " .. series_name)
     self:processMangaSeries(series_data.folder_path, series_name)
     
     if GlobalState.active_widget and GlobalState.active_widget.current_view == "chapters" 
@@ -465,7 +463,7 @@ function MangaLibraryWidget:init()
     self.key_events = {
         Close = { { "Back" }, doc = "close manga library" },
     }
-    Logger:debug("MangaLibraryWidget initialized")
+    Logger.debug("MangaLibraryWidget initialized")
 end
 
 function MangaLibraryWidget:buildLibraryView()
@@ -636,12 +634,6 @@ function MangaLibraryWidget:showSettings()
             text = _("Refresh Library"),
             callback = function()
                 self:refreshLibrary()
-            end,
-        },
-        {
-            text = _("View Error Log"),
-            callback = function()
-                self:showErrorLog()
             end,
         },
         {
@@ -896,7 +888,7 @@ function MangaLibraryWidget:addMangaToLibrary(manga, chapters)
     
     self.cache_valid = false
     
-    Logger:debug("Added " .. manga.title .. " to library with " .. tostring(#chapters) .. " online chapters")
+    Logger.debug("Added " .. manga.title .. " to library with " .. tostring(#chapters) .. " online chapters")
     
     UIManager:show(InfoMessage:new{
         text = "Added " .. manga.title .. " to library!\n" .. tostring(#chapters) .. " chapters available online.",
@@ -1014,12 +1006,12 @@ function MangaLibraryWidget:downloadChapter(manga, chapter, background_mode, cal
     
     os.execute("mkdir -p '" .. chapter_folder .. "'")
     
-    Logger:debug("Downloading chapter: " .. chapter.title)
+    Logger.debug("Downloading chapter: " .. chapter.title)
     
     local images = MangaPillAPI:getChapterImages(chapter.url)
     
     if #images == 0 then
-        Logger:debug("No images found for chapter")
+        Logger.debug("No images found for chapter")
         local key = manga.title .. ":" .. chapter.title
         GlobalState.downloading_chapters[key] = nil
         if callback then callback() end
@@ -1051,7 +1043,7 @@ function MangaLibraryWidget:downloadChapter(manga, chapter, background_mode, cal
         if type(result) ~= "string" then
             os.execute("rm -rf '" .. chapter_folder .. "'")
         end
-        Logger:debug("Chapter packaged successfully")
+        Logger.debug("Chapter packaged successfully")
         
         self.manga_library:refreshSpecificSeries(manga.title)
         self.cache_valid = false
@@ -1064,7 +1056,7 @@ function MangaLibraryWidget:downloadChapter(manga, chapter, background_mode, cal
         end
     else
         os.execute("rm -rf '" .. chapter_folder .. "'")
-        Logger:debug("Failed to package chapter")
+        Logger.debug("Failed to package chapter")
     end
     
     local key = manga.title .. ":" .. chapter.title
@@ -1252,22 +1244,7 @@ function MangaLibraryWidget:showManageSeriesScreen()
     UIManager:setDirty(self, "ui")
 end
 
-function MangaLibraryWidget:showErrorLog()
-    local log_text = "=== MANGA LIBRARY ERROR LOG ===\n\n"
-    if #GlobalState.error_log == 0 then
-        log_text = log_text .. _("No errors logged yet.")
-    else
-        local start_idx = math.max(1, #GlobalState.error_log - 50)
-        for i = start_idx, #GlobalState.error_log do
-            log_text = log_text .. GlobalState.error_log[i] .. "\n"
-        end
-    end
-    
-    UIManager:show(InfoMessage:new{
-        text = log_text,
-        timeout = 30,
-    })
-end
+
 
 function MangaLibraryWidget:showFolderManagement()
     local folder_list = {}
@@ -1514,7 +1491,7 @@ function MangaLibraryWidget:confirmRemoveFolder(folder_path, folder_index)
             
             for _, series_name in ipairs(series_to_remove) do
                 self.manga_library.reading_progress[series_name] = nil
-                Logger:debug("Removed series from library: " .. series_name)
+                Logger.debug("Removed series from library: " .. series_name)
             end
             
             table.remove(self.manga_library.manga_folders, folder_index)
@@ -1571,7 +1548,7 @@ end
 function MangaLibraryWidget:showChapterView(series_name)
     self.current_view = "chapters"
     self.current_series = series_name
-    Logger:debug("Showing chapter view for: " .. series_name)
+    Logger.debug("Showing chapter view for: " .. series_name)
     
     local series_data = self.manga_library.reading_progress[series_name]
     if not series_data then
@@ -1678,10 +1655,10 @@ function MangaLibraryWidget:showChapterView(series_name)
         return a_num < b_num
     end)
     
-    Logger:debug("Unified chapter list: " .. tostring(#all_chapters) .. " chapters")
+    Logger.debug("Unified chapter list: " .. tostring(#all_chapters) .. " chapters")
     if #all_chapters > 0 then
-        Logger:debug("First chapter num: " .. tostring(all_chapters[1].chapter_num))
-        Logger:debug("Last chapter num: " .. tostring(all_chapters[#all_chapters].chapter_num))
+        Logger.debug("First chapter num: " .. tostring(all_chapters[1].chapter_num))
+        Logger.debug("Last chapter num: " .. tostring(all_chapters[#all_chapters].chapter_num))
     end
     
     for _, ch_info in ipairs(all_chapters) do
@@ -1921,8 +1898,8 @@ function MangaLibraryWidget:toggleChapterReadStatus(chapter, series_name)
 end
 
 function MangaLibraryWidget:openChapter(chapter, series_name)
-    Logger:debug("Opening: " .. chapter.path)
-    Logger:debug("Series: " .. series_name)
+    Logger.debug("Opening: " .. chapter.path)
+    Logger.debug("Series: " .. series_name)
     
     if not self.manga_library.reading_progress[series_name].read_chapters then
         self.manga_library.reading_progress[series_name].read_chapters = {}
@@ -1937,7 +1914,7 @@ function MangaLibraryWidget:openChapter(chapter, series_name)
     
     UIManager:scheduleIn(0.5, function()
         if ReaderUI.instance then
-            Logger:debug("Hooking to ReaderUI after opening")
+            Logger.debug("Hooking to ReaderUI after opening")
             self.manga_library:hookWithPriorityOntoReaderUiEvents(ReaderUI.instance)
         end
     end)
@@ -2079,7 +2056,7 @@ function MangaLibrary:refreshLibrary()
         end)
         
         if not success then
-            Logger:debug("Error processing folder: " .. folder_path .. " - " .. tostring(err))
+            Logger.debug("Error processing folder: " .. folder_path .. " - " .. tostring(err))
         end
     end
     

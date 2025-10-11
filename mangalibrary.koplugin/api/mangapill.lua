@@ -2,7 +2,7 @@ local http = require("socket.http")
 local ltn12 = require("ltn12")
 
 local Utils = require("utils")
-local Logger = require("logger")
+local Logger = require("logger_module")
 
 local MangaPillAPI = {
     _base_url = "https://mangapill.com",
@@ -20,16 +20,16 @@ function MangaPillAPI:makeRequest(path)
     if result and status_code == 200 then
         return table.concat(response_body)
     end
-    Logger:debug("HTTP request failed: " .. tostring(status_code))
+    Logger.debug("HTTP request failed: " .. tostring(status_code))
     return nil
 end
 
 function MangaPillAPI:search(query)
-    Logger:debug("Searching for: " .. query)
+    Logger.debug("Searching for: " .. query)
     local encoded = query:gsub(" ", "+")
     local html = self:makeRequest("/search?q=" .. encoded)
     if not html then 
-        Logger:debug("Search request failed")
+        Logger.debug("Search request failed")
         return {} 
     end
     
@@ -62,15 +62,15 @@ function MangaPillAPI:search(query)
         end
     end
 
-    Logger:debug("Found " .. tostring(#results) .. " results")
+    Logger.debug("Found " .. tostring(#results) .. " results")
     return results
 end
 
 function MangaPillAPI:getChapterList(manga_id)
-    Logger:debug("Fetching chapters for: " .. manga_id)
+    Logger.debug("Fetching chapters for: " .. manga_id)
     local html = self:makeRequest("/manga/" .. manga_id)
     if not html then 
-        Logger:debug("Failed to get HTML")
+        Logger.debug("Failed to get HTML")
         return {} 
     end
     
@@ -134,7 +134,7 @@ function MangaPillAPI:getChapterList(manga_id)
         return a_num < b_num
     end)
     
-    Logger:debug("Sorted " .. tostring(#chapters) .. " chapters")
+    Logger.debug("Sorted " .. tostring(#chapters) .. " chapters")
     return chapters
 end
 
